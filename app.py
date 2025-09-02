@@ -102,6 +102,44 @@ def ensure_binary_event(col, events, censored):
         return np.nan
     return col.apply(_map).astype(float)
 
+def calculate_hosmer_lemeshow(y_true, y_pred_prob, n_groups=10):
+    """
+    Calculates the Hosmer-Lemeshow goodness of fit test.
+    """
+    data = pd.DataFrame({'y_true': y_true, 'y_pred_prob': y_pred_prob})
+    
+    try:
+        data['group'] = pd.qcut(data['y_pred_prob'], q=n_groups, duplicates='drop')
+    except ValueError:
+        n_groups = data['y_pred_prob'].nunique()
+        if n_groups < 2: return np.nan, np.nan, "Not enough unique probabilities for the test."
+        data['group'] = pd.qcut(data['y_pred_prob'], q=n_groups, duplicates='drop')
+    
+    summary = data.groupby('group', observed=False).agg(
+        total_count=('y_true', 'count'),
+        observed_events=('y_true', 'sum'),
+        expected_events=('y_pred_prob', 'sum')
+    )
+    
+    summary['observed_non_events'] = summary['total_count'] - summary['observed_events']
+    summary['expected_non_events'] = summary['total_count'] - summary['expected_events']
+
+    if (summary['expected_events'] < 1e-6).any() or (summary['expected_non_events'] < 1e-6).any():
+        return np.nan, np.nan, "Test failed due to zero or near-zero expected frequencies in some groups."
+
+    hl_stat = (
+        ((summary['observed_events'] - summary['expected_events'])**2 / summary['expected_events']) +
+        ((summary['observed_non_events'] - summary['expected_non_events'])**2 / summary['expected_non_events'])
+    ).sum()
+
+    df_hl = len(summary) - 2
+    if df_hl <= 0:
+        return np.nan, np.nan, "Not enough groups to calculate p-value (degrees of freedom <= 0)."
+        
+    p_value = stats.chi2.sf(hl_stat, df_hl)
+    
+    return hl_stat, p_value, None
+
 def select_penalizer_by_cv(X_all, time_col, event_col,
                            grid=(0.0, 0.01, 0.05, 0.1, 0.2, 0.5),
                            k=5, seed=42):
@@ -304,84 +342,115 @@ if df is not None:
                 cols_to_use = [dep_var] + indep_vars
                 df_model = df[cols_to_use].copy()
                 
-                # Create binary dependent variable
                 df_model['__dependent_var_binary'] = ensure_binary_event(df_model[dep_var], set(event_values), set(control_values))
                 df_model.dropna(subset=['__dependent_var_binary'], inplace=True)
                 df_model['__dependent_var_binary'] = df_model['__dependent_var_binary'].astype(int)
 
                 y = df_model['__dependent_var_binary']
-                
-                # Prepare independent variables (X)
-                X_list = []
-                cat_info_logistic = {}
-
+                X_list, cat_info_logistic = [], {}
                 for var in indep_vars:
                     if not is_continuous(df_model[var], threshold=max_levels_logistic):
-                        # Categorical variable
                         levels = ordered_levels(df_model[var])
                         cat_info_logistic[var] = {"levels": levels, "ref": levels[0]}
-                        dummies = make_dummies(df_model[[var]], var, levels)
-                        X_list.append(dummies)
+                        X_list.append(make_dummies(df_model[[var]], var, levels))
                     else:
-                        # Continuous variable
                         cat_info_logistic[var] = {"levels": None, "ref": None}
                         X_list.append(pd.to_numeric(df_model[var], errors='coerce').rename(var))
                 
-                if not X_list:
-                    st.error("유효한 독립 변수가 없습니다.")
-                    st.stop()
+                if not X_list: st.error("유효한 독립 변수가 없습니다."); st.stop()
 
                 X_processed = pd.concat(X_list, axis=1)
-                X_processed.index = y.index
-
-                # Drop rows with any NaNs in predictors
                 model_data = pd.concat([y, X_processed], axis=1).dropna()
-                y = model_data[y.name]
-                X = model_data.drop(columns=[y.name])
-                
-                X = sm.add_constant(X, has_constant='add')
-                X = drop_constant_cols(X) # Remove constant predictors
+                y_final = model_data[y.name]
+                X_final = model_data.drop(columns=[y.name])
+                X_final = sm.add_constant(X_final, has_constant='add')
+                X_final = drop_constant_cols(X_final)
 
-                if X.shape[1] <= 1: # Only constant remains
-                    st.error("분석에 사용할 유효한 독립 변수가 부족합니다 (상수 열만 존재).")
-                    st.stop()
-                
-                st.info(f"분석에 사용된 총 관측치: {len(y)}, 사건 수: {y.sum()}")
-                
-                # --- 3. Model Fitting ---
-                model = sm.Logit(y, X)
-                result = model.fit()
+                if X_final.shape[1] <= 1: st.error("분석에 사용할 유효한 독립 변수가 부족합니다."); st.stop()
+                st.info(f"분석에 사용된 총 관측치: {len(y_final)}, 사건 수: {y_final.sum()}")
 
-                # --- 4. Result Formatting ---
-                params = result.params
-                conf = result.conf_int()
-                conf.columns = ['OR 95% Lower', 'OR 95% Upper']
+                # --- 3. Univariate & Multivariate Analyses ---
+                uni_results = {}
+                for var in indep_vars:
+                    try:
+                        var_cols = [c for c in X_final.columns if c == var or c.startswith(f"{var}=")]
+                        if not var_cols: continue
+                        X_uni = X_final[['const'] + var_cols]
+                        y_uni = y_final.loc[X_uni.index]
+                        if len(y_uni.unique()) > 1:
+                            uni_results[var] = sm.Logit(y_uni, X_uni).fit(disp=0)
+                    except Exception: uni_results[var] = None
                 
-                summary_df = pd.DataFrame({
-                    'B (coef)': params,
-                    'S.E.': result.bse,
-                    'Wald': (params / result.bse) ** 2,
-                    'p-value': result.pvalues,
-                    'Odds Ratio': np.exp(params)
-                })
-                summary_df = pd.concat([summary_df, np.exp(conf)], axis=1)
-                
-                # Reorder and format
-                summary_df = summary_df[['B (coef)', 'S.E.', 'Wald', 'p-value', 'Odds Ratio', 'OR 95% Lower', 'OR 95% Upper']]
-                summary_df['p-value'] = summary_df['p-value'].apply(format_p)
-                
-                st.write("### 로지스틱 회귀분석 결과")
-                st.dataframe(summary_df.style.format("{:.3f}", subset=pd.IndexSlice[:, summary_df.columns != 'p-value']))
+                result_multi = sm.Logit(y_final, X_final).fit(disp=0)
 
-                # --- 5. Excel Download ---
+                # --- 4. Create Publication-Style Table ---
+                output_rows = []
+                for var in indep_vars:
+                    is_cat = var in cat_info_logistic and cat_info_logistic[var]['levels'] is not None
+                    row_data = {}
+
+                    if is_cat:
+                        output_rows.append({'Factor': var, 'Subgroup': ''})
+                        levels = cat_info_logistic[var]['levels']
+                        output_rows.append({'Factor': '', 'Subgroup': f"{levels[0]} (Reference)", 'Univariate OR (95% CI)': '1.0', 'Multivariate OR (95% CI)': '1.0'})
+                        
+                        for level in levels[1:]:
+                            dummy_name = f"{var}={level}"
+                            row_data = {'Factor': '', 'Subgroup': str(level)}
+                            # Uni
+                            res_uni = uni_results.get(var)
+                            if res_uni and dummy_name in res_uni.params:
+                                param, pval, conf = res_uni.params[dummy_name], res_uni.pvalues[dummy_name], res_uni.conf_int().loc[dummy_name]
+                                row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
+                                row_data['p-value (Uni)'] = format_p(pval)
+                            # Multi
+                            if dummy_name in result_multi.params:
+                                param, pval, conf = result_multi.params[dummy_name], result_multi.pvalues[dummy_name], result_multi.conf_int().loc[dummy_name]
+                                row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
+                                row_data['p-value (Multi)'] = format_p(pval)
+                            output_rows.append(row_data)
+                    else: # Continuous
+                        row_data = {'Factor': var, 'Subgroup': ''}
+                        # Uni
+                        res_uni = uni_results.get(var)
+                        if res_uni and var in res_uni.params:
+                            param, pval, conf = res_uni.params[var], res_uni.pvalues[var], res_uni.conf_int().loc[var]
+                            row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
+                            row_data['p-value (Uni)'] = format_p(pval)
+                        # Multi
+                        if var in result_multi.params:
+                            param, pval, conf = result_multi.params[var], result_multi.pvalues[var], result_multi.conf_int().loc[var]
+                            row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
+                            row_data['p-value (Multi)'] = format_p(pval)
+                        output_rows.append(row_data)
+
+                publication_df = pd.DataFrame(output_rows).fillna('')
+                st.write("### 로지스틱 회귀분석 결과 (논문 형식)")
+                st.dataframe(publication_df)
+
+                # --- 5. Hosmer-Lemeshow Test ---
+                st.write("---")
+                st.write("### 모델 적합도 검정 (Hosmer-Lemeshow Test)")
+                y_pred_prob = result_multi.predict(X_final)
+                hl_stat, p_value_hl, hl_error = calculate_hosmer_lemeshow(y_final, y_pred_prob)
+                if hl_error:
+                    st.warning(f"호스머-렘쇼 검정을 수행할 수 없습니다: {hl_error}")
+                else:
+                    col1, col2 = st.columns(2)
+                    col1.metric("Chi-squared statistic", f"{hl_stat:.3f}")
+                    col2.metric("p-value", f"{p_value_hl:.3f}")
+                    st.caption("※ p-value가 0.05보다 크면 모델이 데이터에 잘 적합한다고 해석할 수 있습니다.")
+
+                # --- 6. Excel Download ---
                 output_logistic = io.BytesIO()
                 with pd.ExcelWriter(output_logistic, engine='openpyxl') as writer:
-                    summary_df.to_excel(writer, index=True)
+                    publication_df.to_excel(writer, index=False, sheet_name='Logistic Regression Results')
                 st.download_button(
                     label="분석 결과 엑셀로 저장",
                     data=output_logistic.getvalue(),
-                    file_name="Logistic_Regression_Results.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    file_name="Logistic_Regression_Publication_Table.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key='download_logistic_publication'
                 )
 
             except Exception as e:
