@@ -10,6 +10,7 @@ import io
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceError
 import statsmodels.api as sm # For Logistic Regression
+from statsmodels.tools.sm_exceptions import PerfectSeparationError
 import matplotlib.pyplot as plt
 
 # ----- 페이지 설정 -----
@@ -327,13 +328,11 @@ if df is not None:
 
         indep_vars = st.multiselect("독립 변수 (X) 선택 (위험인자 후보)", [c for c in df.columns if c != dep_var], key="logistic_indep_vars")
         
-        # --- NEW: p-enter setting ---
         c1_log, c2_log = st.columns(2)
         p_enter_logistic = c1_log.number_input("다변량 포함 기준 p-enter (≤)", 0.001, 1.0, 0.05, 0.01, key='logistic_p_enter')
         max_levels_logistic = c2_log.number_input("범주형 판정 최대 고유값", 2, 50, 10, 1, key="logistic_max_levels")
 
         if st.button("로지스틱 회귀분석 실행", key="run_logistic"):
-            # --- 1. Input Validation ---
             if not dep_var or not event_values or not control_values or not indep_vars:
                 st.error("종속 변수, 사건 값, 기준 값, 독립 변수를 모두 선택해야 합니다.")
                 st.stop()
@@ -341,7 +340,6 @@ if df is not None:
                 st.error("사건 값과 기준 값이 겹칩니다. 다시 선택하세요.")
                 st.stop()
 
-            # --- 2. Data Preparation ---
             try:
                 with st.spinner('분석을 수행 중입니다...'):
                     cols_to_use = [dep_var] + indep_vars
@@ -374,9 +372,10 @@ if df is not None:
                     if X_final.shape[1] <= 1: st.error("분석에 사용할 유효한 독립 변수가 부족합니다."); st.stop()
                     st.info(f"분석에 사용된 총 관측치: {len(y_final)}, 사건 수: {y_final.sum()}")
 
-                    # --- 3. Univariate Analysis & Variable Selection ---
                     uni_results = {}
                     univariate_pvals = {}
+                    failed_uni_vars = {} # New: For error diagnosis
+
                     for var in indep_vars:
                         try:
                             var_cols = [c for c in X_final.columns if c == var or c.startswith(f"{var}=")]
@@ -384,34 +383,45 @@ if df is not None:
                             X_uni = X_final[['const'] + var_cols]
                             y_uni = y_final.loc[X_uni.index]
                             if len(y_uni.unique()) > 1:
-                                res = sm.Logit(y_uni, X_uni).fit(disp=0)
+                                res = sm.Logit(y_uni, X_uni).fit(method='newton', disp=0) # Use robust solver
                                 uni_results[var] = res
                                 pvals = [res.pvalues[c] for c in res.pvalues.index if c != 'const']
                                 if pvals:
                                     univariate_pvals[var] = min(pvals)
-                        except Exception: 
-                            uni_results[var] = None
+                        except PerfectSeparationError:
+                            failed_uni_vars[var] = "데이터 완전 분리(Perfect Separation)로 분석 실패"
+                        except np.linalg.LinAlgError:
+                            failed_uni_vars[var] = "다중공선성(Singular Matrix) 문제로 분석 실패"
+                        except Exception as e: 
+                            failed_uni_vars[var] = f"알 수 없는 오류로 분석 실패 ({e})"
                     
+                    if failed_uni_vars:
+                        st.warning("일부 변수에 대한 단변량 분석에 실패했습니다:")
+                        for var, reason in failed_uni_vars.items():
+                            st.caption(f"- **{var}**: {reason}")
+
                     selected_vars_for_multi = [v for v, p in univariate_pvals.items() if p <= p_enter_logistic]
                     st.write(f"**다변량 분석 포함 변수 (p ≤ {p_enter_logistic})**: {selected_vars_for_multi if selected_vars_for_multi else '없음'}")
 
-                    # --- 4. Multivariate Analysis ---
                     result_multi = None
+                    X_multi, y_multi = None, None
                     if selected_vars_for_multi:
                         multi_cols_to_keep = ['const']
                         for var in selected_vars_for_multi:
                             multi_cols_to_keep.extend([c for c in X_final.columns if c == var or c.startswith(f"{var}=")])
                         
-                        X_multi = X_final[list(dict.fromkeys(multi_cols_to_keep))] # Preserve order, remove duplicates
+                        X_multi = X_final[list(dict.fromkeys(multi_cols_to_keep))]
                         y_multi = y_final.loc[X_multi.index]
 
                         if X_multi.shape[1] > 1:
-                            result_multi = sm.Logit(y_multi, X_multi).fit(disp=0)
+                            try:
+                                result_multi = sm.Logit(y_multi, X_multi).fit(method='newton', disp=0)
+                            except Exception as e:
+                                st.error(f"다변량 분석 중 오류가 발생했습니다: {e}")
 
-                    # --- 5. Create Publication-Style Table ---
                     output_rows = []
                     for var in indep_vars:
-                        is_cat = var in cat_info_logistic and cat_info_logistic[var]['levels'] is not None
+                        is_cat = cat_info_logistic.get(var, {}).get('levels') is not None
                         
                         if is_cat:
                             output_rows.append({'Factor': var, 'Subgroup': '', 'Univariate OR (95% CI)': '', 'p-value (Uni)': '', 'Multivariate OR (95% CI)': '', 'p-value (Multi)': ''})
@@ -422,7 +432,6 @@ if df is not None:
                                 dummy_name = f"{var}={level}"
                                 row_data = {'Factor': '', 'Subgroup': str(level)}
                                 res_uni = uni_results.get(var)
-                                # Univariate results
                                 if res_uni and dummy_name in res_uni.params:
                                     param, pval, conf = res_uni.params[dummy_name], res_uni.pvalues[dummy_name], res_uni.conf_int().loc[dummy_name]
                                     row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
@@ -431,19 +440,14 @@ if df is not None:
                                     row_data['Univariate OR (95% CI)'] = 'NA'
                                     row_data['p-value (Uni)'] = 'NA'
                                 
-                                # Multivariate results
                                 if result_multi and var in selected_vars_for_multi and dummy_name in result_multi.params:
                                     param, pval, conf = result_multi.params[dummy_name], result_multi.pvalues[dummy_name], result_multi.conf_int().loc[dummy_name]
                                     row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                                     row_data['p-value (Multi)'] = format_p(pval)
-                                else:
-                                    row_data['Multivariate OR (95% CI)'] = ''
-                                    row_data['p-value (Multi)'] = ''
                                 output_rows.append(row_data)
-                        else: # Continuous
+                        else:
                             row_data = {'Factor': var, 'Subgroup': ''}
                             res_uni = uni_results.get(var)
-                            # Univariate results
                             if res_uni and var in res_uni.params:
                                 param, pval, conf = res_uni.params[var], res_uni.pvalues[var], res_uni.conf_int().loc[var]
                                 row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
@@ -452,24 +456,19 @@ if df is not None:
                                 row_data['Univariate OR (95% CI)'] = 'NA'
                                 row_data['p-value (Uni)'] = 'NA'
 
-                            # Multivariate results
                             if result_multi and var in selected_vars_for_multi and var in result_multi.params:
                                 param, pval, conf = result_multi.params[var], result_multi.pvalues[var], result_multi.conf_int().loc[var]
                                 row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                                 row_data['p-value (Multi)'] = format_p(pval)
-                            else:
-                                row_data['Multivariate OR (95% CI)'] = ''
-                                row_data['p-value (Multi)'] = ''
                             output_rows.append(row_data)
 
                     publication_df = pd.DataFrame(output_rows).fillna('')
                     st.write("### 로지스틱 회귀분석 결과 (논문 형식)")
                     st.dataframe(publication_df)
 
-                    # --- 6. Hosmer-Lemeshow Test ---
                     if result_multi:
                         st.write("---")
-                        st.write("### 모델 적합도 검정 (Hosmer-Lemeshow Test for Multivariate Model)")
+                        st.write("### 모델 적합도 검정 (Hosmer-Lemeshow Test)")
                         y_pred_prob = result_multi.predict(X_multi)
                         hl_stat, p_value_hl, hl_error = calculate_hosmer_lemeshow(y_multi, y_pred_prob)
                         if hl_error:
@@ -480,7 +479,6 @@ if df is not None:
                             col2.metric("p-value", f"{p_value_hl:.3f}")
                             st.caption("※ p-value가 0.05보다 크면 모델이 데이터에 잘 적합한다고 해석할 수 있습니다.")
 
-                    # --- 7. Excel Download ---
                     output_logistic = io.BytesIO()
                     with pd.ExcelWriter(output_logistic, engine='openpyxl') as writer:
                         publication_df.to_excel(writer, index=False, sheet_name='Logistic Regression Results')
