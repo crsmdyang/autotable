@@ -57,18 +57,19 @@ def is_continuous(series, threshold=20):
         return False
 
 def ordered_levels(series):
-    vals = pd.Series(series.dropna().unique()).tolist()
-    numeric = []
-    non = []
-    for v in vals:
-        try:
-            numeric.append((float(str(v)), v))
-        except Exception:
-            non.append(str(v))
-    if len(numeric) == len(vals) and len(vals) > 0:
-        numeric.sort(key=lambda x: x[0])
-        return [v for _, v in numeric]
-    return sorted([str(v) for v in vals], key=lambda x: x)
+    # Get unique non-null values and convert them to strings immediately.
+    # This resolves issues like 1 and '1' being treated differently.
+    unique_strings = pd.Series(series.dropna().unique()).astype(str).unique().tolist()
+
+    # Try to sort numerically. If it fails, sort alphabetically.
+    try:
+        # Sort based on float representation
+        unique_strings.sort(key=float)
+    except ValueError:
+        # If any value cannot be converted to float, sort as strings
+        unique_strings.sort()
+    
+    return unique_strings
 
 def make_dummies(df_in, var, levels):
     # "변수=수준" 이름으로 더미 생성 (drop_first → 첫 레벨이 Reference)
