@@ -1,18 +1,17 @@
 # -*- coding: utf-8 -*-
 
 # ================== 자동 Table & Cox 분석기 (penalizer Auto-CV 포함) ==================
-# 필요 패키지: pandas, numpy, scipy, lifelines, openpyxl, xlrd, streamlit
-# 설치: pip install -U pandas numpy scipy lifelines openpyxl xlrd streamlit
-# =================================================================================
+# 필요 패키지: pandas, numpy, scipy, lifelines, openpyxl, xlrd, streamlit, statsmodels
+# 설치: pip install -U pandas numpy scipy lifelines openpyxl xlrd streamlit statsmodels
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-from scipy import stats
 import io
+import numpy as np
+import pandas as pd
+from scipy import stats
+import streamlit as st
+import matplotlib.pyplot as plt
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceError
-import matplotlib.pyplot as plt
 
 # ----- 페이지 설정 -----
 st.set_page_config(page_title="자동 논문 Table", layout="wide")
@@ -41,6 +40,7 @@ _check_password()
 
 st.title("자동 Table 생성기")
 
+
 # -------------------- [공통 유틸] --------------------
 def format_p(p):
     if p is None or (isinstance(p, float) and np.isnan(p)):
@@ -59,8 +59,7 @@ def is_continuous(series, threshold=20):
 
 def ordered_levels(series):
     vals = pd.Series(series.dropna().unique()).tolist()
-    numeric = []
-    non = []
+    numeric, non = [], []
     for v in vals:
         try:
             numeric.append((float(str(v)), v))
@@ -73,9 +72,11 @@ def ordered_levels(series):
 
 def make_dummies(df_in, var, levels):
     # "변수=수준" 이름으로 더미 생성 (drop_first → 첫 레벨이 Reference)
-    cat = pd.Categorical(df_in[var].astype(str),
-                         categories=[str(x) for x in levels],
-                         ordered=True)
+    cat = pd.Categorical(
+        df_in[var].astype(str),
+        categories=[str(x) for x in levels],
+        ordered=True
+    )
     dmy = pd.get_dummies(cat, prefix=var, prefix_sep="=", drop_first=True, dtype=float)
     dmy.index = df_in.index
     return dmy
@@ -87,7 +88,7 @@ def drop_constant_cols(X):
     keep = [c for c in X.columns if X[c].nunique(dropna=True) > 1]
     return X[keep]
 
-def drop_constant_predictors(X, time_col, event_col):  # === NEW: CV용 (time/event는 항상 유지)
+def drop_constant_predictors(X, time_col, event_col):  # === CV용 (time/event는 항상 유지)
     pred_cols = [c for c in X.columns if c not in [time_col, event_col]]
     keep = [c for c in pred_cols if X[c].nunique(dropna=True) > 1]
     return X[[time_col, event_col] + keep]
@@ -105,14 +106,16 @@ def ensure_binary_event(col, events, censored):
     return col.apply(_map).astype(float)
 
 # === NEW: penalizer를 CV로 선택 (C-index 최대화) ===
-def select_penalizer_by_cv(X_all, time_col, event_col,
-                           grid=(0.0, 0.01, 0.05, 0.1, 0.2, 0.5),
-                           k=5, seed=42):
+def select_penalizer_by_cv(
+    X_all, time_col, event_col,
+    grid=(0.0, 0.01, 0.05, 0.1, 0.2, 0.5),
+    k=5, seed=42
+):
     """
     X_all: duration, event, predictors를 모두 포함한 데이터프레임 (dropna/상수열 제거된 상태 권장)
     반환: best_penalizer(or None), {penalizer: mean_cindex}
     """
-    if X_all.shape[0] < k + 2 or X_all[event_col].sum() < k:  # 너무 작은 경우 방어
+    if X_all.shape[0] < k + 2 or X_all[event_col].sum() < k:
         return None, {}
 
     idx = X_all.index.to_numpy()
@@ -143,7 +146,6 @@ def select_penalizer_by_cv(X_all, time_col, event_col,
             try:
                 cph = CoxPHFitter(penalizer=pen)
                 cph.fit(train, duration_col=time_col, event_col=event_col)
-                # lifelines의 점수: concordance_index
                 s = cph.score(test, scoring_method="concordance_index")
                 s = float(s)
                 if np.isfinite(s):
@@ -160,6 +162,7 @@ def select_penalizer_by_cv(X_all, time_col, event_col,
     # 최고 C-index, 동점이면 더 작은 penalizer 선택
     best_pen = sorted(scores.items(), key=lambda x: (-x[1], x[0]))[0][0]
     return best_pen, scores
+
 
 # -------------------- [파일 업로드] --------------------
 uploaded_file = st.file_uploader("엑셀/CSV 업로드", type=['xls', 'xlsx', 'csv'])
@@ -184,10 +187,11 @@ if uploaded_file:
         st.stop()
 
     # 컬럼 공백/개행 제거 & 중복 방지
-    df.columns = pd.Index([str(c).strip() for c in df.columns]).map(lambda x: x.replace("\\n", " ").strip())
+    df.columns = pd.Index([str(c).strip() for c in df.columns]).map(lambda x: x.replace("\n", " ").strip())
     st.success(f"시트명: {sheetname if sheetname else ''}, 데이터 shape: {df.shape}")
     st.dataframe(df.head())
     st.session_state['df'] = df
+
 
 # -------------------- [Table1: 서브 함수] --------------------
 def calc_subgroup_p(valid, group_col, var, val, group_values):
@@ -210,7 +214,7 @@ def calc_subgroup_p(valid, group_col, var, val, group_values):
 def analyze_table1_display(df, group_col, value_map, threshold=20):
     result_rows = []
     group_values = list(value_map.keys())
-    group_names = list(value_map.values())
+    group_names  = list(value_map.values())
     group_n = {g: (df[group_col] == g).sum() for g in group_values}
 
     for var in df.columns:
@@ -319,13 +323,9 @@ def analyze_table1_display(df, group_col, value_map, threshold=20):
 
     return pd.DataFrame(result_rows)
 
+
 # -------------------- [UI: Tab 구성] --------------------
-if 'df' in st.session_state:
-    df = st.session_state['df']
-
-if 'df' not in locals():
-    df = None
-
+df = st.session_state.get('df')
 if df is not None:
     tab1, tab2, tab3 = st.tabs(["📊 Table1 자동화", "🟦 Cox 회귀분석 (Univariate/Multivariate)", "🟧 로지스틱 회귀분석 (Risk Factors)"])
 
@@ -333,9 +333,10 @@ if df is not None:
     with tab1:
         st.header("2단계: Table 자동화 (값 직접 선택/라벨/행분리/요약 지원)")
         st.info(
-            "📌 연속형/범주형 자동 분류: 고유값 20개 초과 → 연속형, 이하는 범주형.\\n"
+            "📌 연속형/범주형 자동 분류: 고유값 20개 초과 → 연속형, 이하는 범주형.\n"
             "결과가 상식과 다르면 직접 변수 타입을 확인하세요."
         )
+
         candidate_cols = list(df.columns)
         group_col = st.selectbox("분석할 그룹 변수명을 선택하세요", options=candidate_cols, key='group_col')
         value_map = {}
@@ -344,7 +345,7 @@ if df is not None:
             unique_vals = list(df[group_col].dropna().unique())
             selected_vals = st.multiselect("분석할 값을 선택하세요", unique_vals, default=unique_vals[:2], key='group_values')
             if selected_vals:
-                col1, col2 = st.columns([2,6])
+                col1, col2 = st.columns([2, 6])
                 for val in selected_vals:
                     with col1:
                         st.write(f"값: {val}")
@@ -355,10 +356,10 @@ if df is not None:
                 if st.button("논문 Table1 생성", key='table1_generate'):
                     target_df = df.dropna(subset=[group_col])
                     result = analyze_table1_display(target_df, group_col, value_map, threshold=20)
-                    st.dataframe(result)
+                    st.dataframe(result, use_container_width=True)
 
                     output = io.BytesIO()
-                    with pd.ExcelWriter(output) as writer:
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         result.to_excel(writer, index=False)
                     st.download_button(
                         label="Table1 엑셀로 저장",
@@ -374,14 +375,15 @@ if df is not None:
     # ===== TAB2 =====
     with tab2:
         st.header("논문 Table: Factor / Subgroup / HR(95%CI) / p-value (Univariate & Multivariate)")
-        time_col = st.selectbox("생존기간 변수(time)", df.columns, key="cox_time_col")
+
+        time_col  = st.selectbox("생존기간 변수(time)", df.columns, key="cox_time_col")
         event_col = st.selectbox("Event 변수(예: 0=생존, 1=사망 등)", df.columns, key="cox_event_col")
 
         temp_df = df.copy()
         if event_col:
             unique_events = list(df[event_col].dropna().unique())
             st.write(f"이 변수의 실제 값: {unique_events}")
-            selected_event = st.multiselect("이벤트(사건) 값", unique_events, key='selected_event_val')
+            selected_event    = st.multiselect("이벤트(사건) 값", unique_events, key='selected_event_val')
             selected_censored = st.multiselect("생존/관찰종결(censored) 값", unique_events, key='selected_censored_val')
             st.caption("※ 사건값과 검열값은 서로 겹치면 안 됩니다.")
             temp_df["__event_for_cox"] = ensure_binary_event(temp_df[event_col], set(selected_event), set(selected_censored))
@@ -391,7 +393,7 @@ if df is not None:
         candidate_vars = [c for c in df.columns if c not in [time_col, event_col]]
         variables = st.multiselect("분석 후보 변수 선택", candidate_vars, key="cox_variables")
 
-        c1, c2, c3, c4 = st.columns([1,1,1,1])
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
         with c1:
             p_enter = st.number_input("다변량 포함 기준 p-enter (≤)", min_value=0.001, max_value=1.0, value=0.05, step=0.01)
         with c2:
@@ -401,8 +403,7 @@ if df is not None:
         with c4:
             cv_k = st.number_input("CV folds (K)", min_value=3, max_value=10, value=5, step=1, disabled=not auto_penal)  # === NEW
 
-        penal_col = st.columns(1)[0]
-        penalizer = penal_col.number_input("penalizer (수렴 안정화)", min_value=0.0, max_value=5.0, value=0.1, step=0.1, disabled=auto_penal)
+        penalizer = st.number_input("penalizer (수렴 안정화)", min_value=0.0, max_value=5.0, value=0.1, step=0.1, disabled=auto_penal)
 
         def basic_clean(df_in, time_col):
             out = df_in.copy()
@@ -422,15 +423,16 @@ if df is not None:
 
             temp_df2 = basic_clean(temp_df, time_col).dropna(subset=[time_col, "__event_for_cox"])
             n_events = int(temp_df2["__event_for_cox"].sum())
-            n_total = temp_df2.shape[0]
+            n_total  = temp_df2.shape[0]
             st.info(f"총 관측치: {n_total}, 이벤트 수: {n_events}")
             if n_events < 5:
                 st.warning("이벤트 수가 <5로 매우 적습니다. 추정이 불안정하거나 모델이 실패할 수 있습니다.")
 
             # ---------- 1) Univariate ----------
             uni_sum_dict = {}
-            uni_na_vars = []
-            cat_info = {}
+            uni_na_vars  = []
+            cat_info     = {}
+
             for var in variables:
                 try:
                     dat_raw = temp_df2[[time_col, "__event_for_cox", var]].copy()
@@ -440,6 +442,8 @@ if df is not None:
 
                     if (dat_raw[var].dtype == "object") or (dat_raw[var].nunique(dropna=True) <= max_levels):
                         lvls = ordered_levels(dat_raw[var])
+                        if len(lvls) < 2:
+                            uni_na_vars.append(var); continue
                         cat_info[var] = {"levels": lvls, "ref": lvls[0]}
                         dmy = make_dummies(dat_raw, var, lvls)
                         dat = pd.concat([dat_raw[[time_col, "__event_for_cox"]], dmy], axis=1)
@@ -482,6 +486,7 @@ if df is not None:
             multi_sum = None
             multi_na_vars = []
             chosen_penalizer = penalizer  # 기본값
+
             if len(selected_vars) >= 1:
                 try:
                     dat_base = temp_df2[[time_col, "__event_for_cox"]].copy()
@@ -491,31 +496,37 @@ if df is not None:
                             xi = pd.to_numeric(temp_df2[var], errors="coerce").to_frame(var)
                         else:
                             lvls = cat_info[var]["levels"]
+                            if len(lvls) < 2:
+                                continue
                             xi = make_dummies(temp_df2[[var]], var, lvls)
                         X_list.append(xi)
-                    X_all = pd.concat([dat_base] + X_list, axis=1).dropna()
-                    X_all = drop_constant_predictors(X_all, time_col, "__event_for_cox")
 
-                    # === NEW: Auto-CV로 penalizer 선택 ===
-                    if auto_penal and X_all["__event_for_cox"].sum() >= cv_k:
-                        pen_grid = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5)
-                        best_pen, pen_scores = select_penalizer_by_cv(
-                            X_all, time_col, "__event_for_cox",
-                            grid=pen_grid, k=int(cv_k), seed=42
-                        )
-                        if best_pen is not None:
-                            chosen_penalizer = float(best_pen)
-                            st.success(f"Auto-CV 선택 penalizer = {chosen_penalizer} (평균 C-index 기준)")
-                            st.caption(f"Grid 성능: { {k: round(v,4) for k,v in pen_scores.items()} }")
-                        else:
-                            st.warning("CV로 penalizer를 결정하지 못했습니다. 입력값을 사용합니다.")
-
-                    if (X_all.shape[0] >= 3) and (X_all["__event_for_cox"].sum() >= 1) and (X_all.shape[1] > 2):
-                        cph_multi = CoxPHFitter(penalizer=chosen_penalizer)
-                        cph_multi.fit(X_all, duration_col=time_col, event_col="__event_for_cox")
-                        multi_sum = cph_multi.summary.copy()
-                    else:
+                    if not X_list:
                         multi_na_vars = selected_vars
+                    else:
+                        X_all = pd.concat([dat_base] + X_list, axis=1).dropna()
+                        X_all = drop_constant_predictors(X_all, time_col, "__event_for_cox")
+
+                        # === NEW: Auto-CV로 penalizer 선택 ===
+                        if auto_penal and X_all["__event_for_cox"].sum() >= int(cv_k):
+                            pen_grid = (0.0, 0.01, 0.05, 0.1, 0.2, 0.5)
+                            best_pen, pen_scores = select_penalizer_by_cv(
+                                X_all, time_col, "__event_for_cox",
+                                grid=pen_grid, k=int(cv_k), seed=42
+                            )
+                            if best_pen is not None:
+                                chosen_penalizer = float(best_pen)
+                                st.success(f"Auto-CV 선택 penalizer = {chosen_penalizer} (평균 C-index 기준)")
+                                st.caption(f"Grid 성능: { {k: round(v,4) for k,v in pen_scores.items()} }")
+                            else:
+                                st.warning("CV로 penalizer를 결정하지 못했습니다. 입력값을 사용합니다.")
+
+                        if (X_all.shape[0] >= 3) and (X_all["__event_for_cox"].sum() >= 1) and (X_all.shape[1] > 2):
+                            cph_multi = CoxPHFitter(penalizer=chosen_penalizer)
+                            cph_multi.fit(X_all, duration_col=time_col, event_col="__event_for_cox")
+                            multi_sum = cph_multi.summary.copy()
+                        else:
+                            multi_na_vars = selected_vars
                 except ConvergenceError:
                     multi_na_vars = selected_vars
                 except Exception:
@@ -568,6 +579,7 @@ if df is not None:
                             "Univariate analysis HR (95% CI)": hr_uni, "Univariate analysis p-Value": p_uni,
                             "Multivariate analysis HR (95% CI)": hr_multi, "Multivariate analysis p-Value": p_multi
                         })
+
                 # 연속형
                 else:
                     if (var not in uni_sum_dict) or (var in uni_na_vars) or (var not in uni_sum_dict[var].index if var in uni_sum_dict else True):
@@ -594,10 +606,10 @@ if df is not None:
             st.write("**논문 제출용 테이블 (Univariate/Multivariate 병렬, Reference, Factor/수준구조)**")
             if auto_penal and len(selected_vars) >= 1:
                 st.caption(f"*다변량 최종 penalizer: {chosen_penalizer}*")
-            st.dataframe(result_table)
+            st.dataframe(result_table, use_container_width=True)
 
             output = io.BytesIO()
-            with pd.ExcelWriter(output) as writer:
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 result_table.to_excel(writer, index=False)
             st.download_button(
                 label="Cox 결과 엑셀로 저장",
@@ -636,16 +648,15 @@ if df is not None:
                 df_hl = pd.DataFrame({'y': y_true, 'p': y_prob, 'bin': bins})
                 grp = df_hl.groupby('bin', observed=True)
                 O1 = grp['y'].sum()
-                N = grp['y'].count()
+                N  = grp['y'].count()
                 Pbar = grp['p'].mean()
                 E1 = N * Pbar
                 O0 = N - O1
                 E0 = N - E1
-                # add tiny epsilon to avoid zero division
                 eps = 1e-12
                 HL = (((O1 - E1)**2)/(E1 + eps) + ((O0 - E0)**2)/(E0 + eps)).sum()
                 df = max(1, len(grp) - 2)
-                p = 1 - _stats.chi2.cdf(HL, df)
+                p  = 1 - _stats.chi2.cdf(HL, df)
                 return float(HL), float(p), None
             except Exception as e:
                 return None, None, f"HL 계산 오류: {type(e).__name__}: {e}"
@@ -656,7 +667,7 @@ if df is not None:
         if dep_var:
             unique_outcomes = list(df[dep_var].dropna().unique())
             st.write(f"'{dep_var}' 변수의 고유 값: {unique_outcomes}")
-            event_values = st.multiselect("사건(Event=1)에 해당하는 값 선택", unique_outcomes, key="logistic_event")
+            event_values   = st.multiselect("사건(Event=1)에 해당하는 값 선택", unique_outcomes, key="logistic_event")
             control_values = st.multiselect("기준(Control=0)에 해당하는 값 선택", unique_outcomes, key="logistic_control")
             st.caption("※ 사건 값과 기준 값은 서로 겹치면 안 됩니다.")
         else:
@@ -698,6 +709,8 @@ if df is not None:
                         # 범주형 판정: 고유값 ≤ max_levels OR dtype=object → 범주형
                         if (df_model[var].dtype == 'object') or (df_model[var].nunique(dropna=True) <= max_levels_logistic):
                             levels = ordered_levels(df_model[var])
+                            if len(levels) < 2:
+                                continue
                             cat_info_logistic[var] = {"levels": levels, "ref": levels[0]}
                             X_list.append(make_dummies(df_model[[var]], var, levels))  # drop_first=True 내부 구현
                         else:
@@ -709,23 +722,23 @@ if df is not None:
                         st.stop()
 
                     X_processed = pd.concat(X_list, axis=1)
-                    # 상수 열 제거(모든 값 동일) 후, 상수를 추가 (const는 유지)
-                    X_processed = X_processed.loc[:, X_processed.nunique(dropna=True) > 1]
+                    X_processed = X_processed.loc[:, X_processed.nunique(dropna=True) > 1]  # 상수 열 제거
                     model_data = pd.concat([df_model['__y_bin'], X_processed], axis=1).dropna()
                     y_final = model_data['__y_bin']
                     X_final = model_data.drop(columns=['__y_bin'])
                     X_final = sm.add_constant(X_final, has_constant='add')  # const 추가
 
-                    if X_final.shape[1] <= 1:
-                        st.error("분석에 사용할 유효한 독립 변수가 부족합니다.")
+                    if X_final.shape[1] <= 1 or len(np.unique(y_final)) < 2:
+                        st.error("분석에 사용할 유효한 독립 변수/반응값이 부족합니다.")
                         st.stop()
 
                     st.info(f"분석에 사용된 총 관측치: {int(len(y_final))}, 사건 수: {int(y_final.sum())}")
 
                     # ---------- 1) Univariate ----------
-                    uni_results = {}          # {var: fitted_result}
-                    univariate_pmins = {}     # {var: min p among its terms}
-                    uni_fail_reasons = {}     # {var: reason}
+                    uni_results = {}           # {var: fitted_result}
+                    univariate_pmins = {}      # {var: min p among its terms}
+                    uni_fail_reasons = {}      # {var: reason}
+
                     for var in indep_vars:
                         try:
                             # 해당 변수의 모든 컬럼(연속형 1개 또는 더미들)만 추출
@@ -771,11 +784,10 @@ if df is not None:
                         multi_cols = ['const']
                         for var in selected_vars_for_multi:
                             multi_cols += [c for c in X_final.columns if (c == var) or c.startswith(f"{var}=")]
-                        # 중복 제거 및 순서 유지
-                        multi_cols = list(dict.fromkeys(multi_cols))
+                        multi_cols = list(dict.fromkeys(multi_cols))  # 중복 제거 & 순서 유지
                         X_multi = X_final[multi_cols].copy()
                         y_multi = y_final.loc[X_multi.index]
-                        if X_multi.shape[1] > 1:
+                        if X_multi.shape[1] > 1 and len(np.unique(y_multi)) > 1:
                             try:
                                 result_multi = sm.Logit(y_multi, X_multi).fit(method='newton', disp=0)
                             except Exception:
@@ -790,10 +802,11 @@ if df is not None:
                             'Univariate OR (95% CI)': '', 'Univariate p-Value': '',
                             'Multivariate OR (95% CI)': '', 'Multivariate p-Value': ''
                         })
+
                         is_cat = (cat_info_logistic.get(var, {}).get('levels') is not None)
                         if is_cat:
                             levels = cat_info_logistic[var]['levels']
-                            ref = cat_info_logistic[var]['ref']
+                            ref    = cat_info_logistic[var]['ref']
                             # Reference 라인
                             rows.append({
                                 'Factor': '', 'Subgroup': f'{ref} (Reference)',
@@ -809,7 +822,7 @@ if df is not None:
                                     b = float(r.params[term]); p = float(r.pvalues[term])
                                     ci_low, ci_high = [float(x) for x in r.conf_int().loc[term].tolist()]
                                     or_txt = f"{np.exp(b):.3f} ({np.exp(ci_low):.3f}-{np.exp(ci_high):.3f})"
-                                    p_txt = format_p(p)
+                                    p_txt  = format_p(p)
                                 else:
                                     or_txt, p_txt = 'NA', 'NA'
                                 # Multivariate
@@ -818,7 +831,7 @@ if df is not None:
                                     b = float(r.params[term]); p = float(r.pvalues[term])
                                     ci_low, ci_high = [float(x) for x in r.conf_int().loc[term].tolist()]
                                     or_multi = f"{np.exp(b):.3f} ({np.exp(ci_low):.3f}-{np.exp(ci_high):.3f})"
-                                    p_multi = format_p(p)
+                                    p_multi  = format_p(p)
                                 else:
                                     or_multi, p_multi = 'NA', 'NA'
                                 rows.append({
@@ -833,7 +846,7 @@ if df is not None:
                                 b = float(r.params[var]); p = float(r.pvalues[var])
                                 ci_low, ci_high = [float(x) for x in r.conf_int().loc[var].tolist()]
                                 or_txt = f"{np.exp(b):.3f} ({np.exp(ci_low):.3f}-{np.exp(ci_high):.3f})"
-                                p_txt = format_p(p)
+                                p_txt  = format_p(p)
                             else:
                                 or_txt, p_txt = 'NA', 'NA'
                             if (result_multi is not None) and (var in result_multi.params.index):
@@ -841,7 +854,7 @@ if df is not None:
                                 b = float(r.params[var]); p = float(r.pvalues[var])
                                 ci_low, ci_high = [float(x) for x in r.conf_int().loc[var].tolist()]
                                 or_multi = f"{np.exp(b):.3f} ({np.exp(ci_low):.3f}-{np.exp(ci_high):.3f})"
-                                p_multi = format_p(p)
+                                p_multi  = format_p(p)
                             else:
                                 or_multi, p_multi = 'NA', 'NA'
                             rows.append({
@@ -852,7 +865,7 @@ if df is not None:
 
                     publication_df = pd.DataFrame(rows)
                     st.write("**논문 제출용 테이블 (Univariate/Multivariate 병렬, Reference, Factor/수준구조)**")
-                    st.dataframe(publication_df)
+                    st.dataframe(publication_df, use_container_width=True)
 
                     # ---- HL 적합도 ----
                     if result_multi is not None:
