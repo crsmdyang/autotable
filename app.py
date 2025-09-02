@@ -387,39 +387,44 @@ if df is not None:
                 output_rows = []
                 for var in indep_vars:
                     is_cat = var in cat_info_logistic and cat_info_logistic[var]['levels'] is not None
-                    row_data = {}
-
+                    
                     if is_cat:
                         output_rows.append({'Factor': var, 'Subgroup': ''})
                         levels = cat_info_logistic[var]['levels']
-                        output_rows.append({'Factor': '', 'Subgroup': f"{levels[0]} (Reference)", 'Univariate OR (95% CI)': '1.0', 'Multivariate OR (95% CI)': '1.0'})
+                        output_rows.append({'Factor': '', 'Subgroup': f"{levels[0]} (Reference)", 'Univariate OR (95% CI)': '1.0', 'p-value (Uni)': '', 'Multivariate OR (95% CI)': '1.0', 'p-value (Multi)': ''})
                         
                         for level in levels[1:]:
                             dummy_name = f"{var}={level}"
                             row_data = {'Factor': '', 'Subgroup': str(level)}
-                            # Uni
                             res_uni = uni_results.get(var)
                             if res_uni and dummy_name in res_uni.params:
-                                param, pval, conf = res_uni.params[dummy_name], res_uni.pvalues[dummy_name], res_uni.conf_int().loc[dummy_name]
+                                param = res_uni.params[dummy_name]
+                                pval = res_uni.pvalues[dummy_name]
+                                conf = res_uni.conf_int().loc[dummy_name]
                                 row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                                 row_data['p-value (Uni)'] = format_p(pval)
-                            # Multi
+                            
                             if dummy_name in result_multi.params:
-                                param, pval, conf = result_multi.params[dummy_name], result_multi.pvalues[dummy_name], result_multi.conf_int().loc[dummy_name]
+                                param = result_multi.params[dummy_name]
+                                pval = result_multi.pvalues[dummy_name]
+                                conf = result_multi.conf_int().loc[dummy_name]
                                 row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                                 row_data['p-value (Multi)'] = format_p(pval)
                             output_rows.append(row_data)
                     else: # Continuous
                         row_data = {'Factor': var, 'Subgroup': ''}
-                        # Uni
                         res_uni = uni_results.get(var)
                         if res_uni and var in res_uni.params:
-                            param, pval, conf = res_uni.params[var], res_uni.pvalues[var], res_uni.conf_int().loc[var]
+                            param = res_uni.params[var]
+                            pval = res_uni.pvalues[var]
+                            conf = res_uni.conf_int().loc[var]
                             row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                             row_data['p-value (Uni)'] = format_p(pval)
-                        # Multi
+
                         if var in result_multi.params:
-                            param, pval, conf = result_multi.params[var], result_multi.pvalues[var], result_multi.conf_int().loc[var]
+                            param = result_multi.params[var]
+                            pval = result_multi.pvalues[var]
+                            conf = result_multi.conf_int().loc[var]
                             row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                             row_data['p-value (Multi)'] = format_p(pval)
                         output_rows.append(row_data)
@@ -449,7 +454,7 @@ if df is not None:
                     label="분석 결과 엑셀로 저장",
                     data=output_logistic.getvalue(),
                     file_name="Logistic_Regression_Publication_Table.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    mime="application/vnd.openxmlformats-officedocument-spreadsheetml-sheet",
                     key='download_logistic_publication'
                 )
 
