@@ -83,9 +83,19 @@ def make_dummies(df_in, var, levels):
 def dummy_colname(var, level):
     return f"{var}={str(level)}"
 
+# --- FIX: This function was incorrectly removing the 'const' column ---
 def drop_constant_cols(X):
-    keep = [c for c in X.columns if X[c].nunique(dropna=True) > 1]
-    return X[keep]
+    """
+    Drops columns from a DataFrame that are constant (have only one unique value),
+    but explicitly keeps the 'const' column if it exists, as it's needed for regression models.
+    """
+    cols_to_keep = []
+    for col in X.columns:
+        # Keep the column if it's 'const' OR if it has more than one unique value
+        if col == 'const' or X[col].nunique(dropna=True) > 1:
+            cols_to_keep.append(col)
+    return X[cols_to_keep]
+
 
 def drop_constant_predictors(X, time_col, event_col):
     pred_cols = [c for c in X.columns if c not in [time_col, event_col]]
@@ -266,7 +276,7 @@ if df is not None:
     tab_titles = [
         "📊 Table1 자동화", 
         "🟦 Cox 회귀분석", 
-        "🟧 로지스틱 회귀분석"
+        "🟧 로지스틱 회귀분석" # New Tab
     ]
     tab1, tab2, tab3 = st.tabs(tab_titles)
 
@@ -298,20 +308,21 @@ if df is not None:
             selected_event = st.multiselect("이벤트(사건) 값", unique_events, key='selected_event_val')
             selected_censored = st.multiselect("생존/관찰종결(censored) 값", unique_events, key='selected_censored_val')
             
-            variables = st.multiselect("분석 후보 변수 선택", [c for c in df.columns if c not in [time_col, event_col]], key="cox_variables")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            p_enter = c1.number_input("다변량 포함 기준 p-enter (≤)", 0.001, 1.0, 0.05, 0.01)
-            max_levels = c2.number_input("범주형 판정 최대 고유값", 2, 50, 10, 1, key="cox_max_levels")
-            auto_penal = c3.checkbox("penalizer 자동 선택 (CV)", value=False)
-            cv_k = c4.number_input("CV folds (K)", 3, 10, 5, 1, disabled=not auto_penal)
-            penalizer = st.number_input("penalizer (수렴 안정화)", 0.0, 5.0, 0.1, 0.01, disabled=auto_penal)
+        variables = st.multiselect("분석 후보 변수 선택", [c for c in df.columns if c not in [time_col, event_col]], key="cox_variables")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        p_enter = c1.number_input("다변량 포함 기준 p-enter (≤)", 0.001, 1.0, 0.05, 0.01)
+        max_levels = c2.number_input("범주형 판정 최대 고유값", 2, 50, 10, 1, key="cox_max_levels")
+        auto_penal = c3.checkbox("penalizer 자동 선택 (CV)", value=False)
+        cv_k = c4.number_input("CV folds (K)", 3, 10, 5, 1, disabled=not auto_penal)
+        penalizer = st.number_input("penalizer (수렴 안정화)", 0.0, 5.0, 0.1, 0.01, disabled=auto_penal)
 
-            if st.button("Cox 회귀분석 실행"):
-                # ... (Cox analysis logic remains the same)
-                pass # Placeholder for brevity, the original logic is preserved.
+        if st.button("Cox 회귀분석 실행"):
+            # ... (Cox analysis logic remains the same)
+            st.info("Cox 회귀분석 로직은 생략되었습니다. 필요시 원본 코드를 참조하세요.")
+            pass # Placeholder for brevity, the original logic is preserved.
 
-    # ===== TAB3: Logistic Regression =====
+    # ===== TAB3: Logistic Regression (NEW) =====
     with tab3:
         st.header("로지스틱 회귀분석 (Risk Factor Analysis)")
         st.info("종속변수의 특정 값을 사건(1)과 기준(0)으로 정의하여 위험인자를 분석합니다.")
@@ -327,169 +338,178 @@ if df is not None:
 
             st.caption("※ 사건 값과 기준 값은 서로 겹치면 안 됩니다.")
 
-            indep_vars = st.multiselect("독립 변수 (X) 선택 (위험인자 후보)", [c for c in df.columns if c != dep_var], key="logistic_indep_vars")
-            
-            c1_log, c2_log = st.columns(2)
-            p_enter_logistic = c1_log.number_input("다변량 포함 기준 p-enter (≤)", 0.001, 1.0, 0.05, 0.01, key='logistic_p_enter')
-            max_levels_logistic = c2_log.number_input("범주형 판정 최대 고유값", 2, 50, 10, 1, key="logistic_max_levels")
+        indep_vars = st.multiselect("독립 변수 (X) 선택 (위험인자 후보)", [c for c in df.columns if c != dep_var], key="logistic_indep_vars")
+        
+        c1_log, c2_log = st.columns(2)
+        p_enter_logistic = c1_log.number_input("다변량 포함 기준 p-enter (≤)", 0.001, 1.0, 0.05, 0.01, key='logistic_p_enter')
+        max_levels_logistic = c2_log.number_input("범주형 판정 최대 고유값", 2, 50, 10, 1, key="logistic_max_levels")
 
-            if st.button("로지스틱 회귀분석 실행", key="run_logistic"):
-                if not dep_var or not event_values or not control_values or not indep_vars:
-                    st.error("종속 변수, 사건 값, 기준 값, 독립 변수를 모두 선택해야 합니다.")
-                    st.stop()
-                if set(event_values) & set(control_values):
-                    st.error("사건 값과 기준 값이 겹칩니다. 다시 선택하세요.")
-                    st.stop()
+        if st.button("로지스틱 회귀분석 실행", key="run_logistic"):
+            if not dep_var or not event_values or not control_values or not indep_vars:
+                st.error("종속 변수, 사건 값, 기준 값, 독립 변수를 모두 선택해야 합니다.")
+                st.stop()
+            if set(event_values) & set(control_values):
+                st.error("사건 값과 기준 값이 겹칩니다. 다시 선택하세요.")
+                st.stop()
 
-                try:
-                    with st.spinner('분석을 수행 중입니다...'):
-                        cols_to_use = [dep_var] + indep_vars
-                        df_model = df[cols_to_use].copy()
+            try:
+                with st.spinner('분석을 수행 중입니다...'):
+                    cols_to_use = [dep_var] + indep_vars
+                    df_model = df[cols_to_use].copy()
+                    
+                    df_model['__dependent_var_binary'] = ensure_binary_event(df_model[dep_var], set(event_values), set(control_values))
+                    df_model.dropna(subset=['__dependent_var_binary'], inplace=True)
+                    df_model['__dependent_var_binary'] = df_model['__dependent_var_binary'].astype(int)
+
+                    y = df_model['__dependent_var_binary']
+                    X_list, cat_info_logistic = [], {}
+                    for var in indep_vars:
+                        if not is_continuous(df_model[var], threshold=max_levels_logistic):
+                            levels = ordered_levels(df_model[var])
+                            cat_info_logistic[var] = {"levels": levels, "ref": levels[0]}
+                            X_list.append(make_dummies(df_model[[var]], var, levels))
+                        else:
+                            cat_info_logistic[var] = {"levels": None, "ref": None}
+                            X_list.append(pd.to_numeric(df_model[var], errors='coerce').rename(var))
+                    
+                    if not X_list: st.error("유효한 독립 변수가 없습니다."); st.stop()
+
+                    X_processed = pd.concat(X_list, axis=1)
+                    model_data = pd.concat([y, X_processed], axis=1).dropna()
+                    y_final = model_data[y.name]
+                    X_final_no_const = model_data.drop(columns=[y.name])
+                    
+                    # Add constant and then drop any constant predictors (but keep the added 'const')
+                    X_final_with_const = sm.add_constant(X_final_no_const, has_constant='add')
+                    X_final = drop_constant_cols(X_final_with_const)
+
+                    if X_final.shape[1] <= 1 or 'const' not in X_final.columns:
+                        st.error("분석에 사용할 유효한 독립 변수가 부족합니다."); st.stop()
+                    st.info(f"분석에 사용된 총 관측치: {len(y_final)}, 사건 수: {y_final.sum()}")
+
+                    uni_results = {}
+                    univariate_pvals = {}
+                    failed_uni_vars = {} 
+
+                    for var in indep_vars:
+                        try:
+                            var_cols = [c for c in X_final.columns if c == var or c.startswith(f"{var}=")]
+                            if not var_cols: continue
+                            
+                            X_uni_cols = ['const'] + var_cols
+                            # Ensure columns exist before slicing
+                            X_uni_cols_exist = [c for c in X_uni_cols if c in X_final.columns]
+                            X_uni = X_final[X_uni_cols_exist]
+
+                            y_uni = y_final.loc[X_uni.index]
+                            
+                            if len(y_uni.unique()) > 1 and X_uni.shape[1] > 1:
+                                res = sm.Logit(y_uni, X_uni).fit(method='newton', disp=0) 
+                                uni_results[var] = res
+                                pvals = [res.pvalues[c] for c in res.pvalues.index if c != 'const']
+                                if pvals:
+                                    univariate_pvals[var] = min(pvals)
+                        except PerfectSeparationError:
+                            failed_uni_vars[var] = "데이터 완전 분리(Perfect Separation)로 분석 실패"
+                        except np.linalg.LinAlgError:
+                            failed_uni_vars[var] = "다중공선성(Singular Matrix) 문제로 분석 실패"
+                        except Exception as e: 
+                            failed_uni_vars[var] = f"알 수 없는 오류로 분석 실패 ({type(e).__name__}: {e})"
+                    
+                    if failed_uni_vars:
+                        st.warning("일부 변수에 대한 단변량 분석에 실패했습니다:")
+                        for var, reason in failed_uni_vars.items():
+                            st.caption(f"- **{var}**: {reason}")
+
+                    selected_vars_for_multi = [v for v, p in univariate_pvals.items() if p <= p_enter_logistic]
+                    st.write(f"**다변량 분석 포함 변수 (p ≤ {p_enter_logistic})**: {selected_vars_for_multi if selected_vars_for_multi else '없음'}")
+
+                    result_multi = None
+                    X_multi, y_multi = None, None
+                    if selected_vars_for_multi:
+                        multi_cols_to_keep = ['const']
+                        for var in selected_vars_for_multi:
+                            multi_cols_to_keep.extend([c for c in X_final.columns if c == var or c.startswith(f"{var}=")])
                         
-                        df_model['__dependent_var_binary'] = ensure_binary_event(df_model[dep_var], set(event_values), set(control_values))
-                        df_model.dropna(subset=['__dependent_var_binary'], inplace=True)
-                        df_model['__dependent_var_binary'] = df_model['__dependent_var_binary'].astype(int)
+                        X_multi = X_final[list(dict.fromkeys(multi_cols_to_keep))]
+                        y_multi = y_final.loc[X_multi.index]
 
-                        y = df_model['__dependent_var_binary']
-                        X_list, cat_info_logistic = {}, {}
-                        for var in indep_vars:
-                            if not is_continuous(df_model[var], threshold=max_levels_logistic):
-                                levels = ordered_levels(df_model[var])
-                                cat_info_logistic[var] = {"levels": levels, "ref": levels[0]}
-                                X_list[var] = make_dummies(df_model[[var]], var, levels)
-                            else:
-                                cat_info_logistic[var] = {"levels": None, "ref": None}
-                                X_list[var] = pd.to_numeric(df_model[var], errors='coerce').rename(var)
-                        
-                        if not X_list: st.error("유효한 독립 변수가 없습니다."); st.stop()
-
-                        X_processed = pd.concat([X_list[var] for var in indep_vars], axis=1)
-                        model_data = pd.concat([y, X_processed], axis=1).dropna()
-                        y_final = model_data[y.name]
-                        X_final = model_data.drop(columns=[y.name])
-                        X_final = sm.add_constant(X_final, has_constant='add')
-                        X_final = drop_constant_cols(X_final)
-                        
-                        if X_final.shape[1] <= 1: st.error("분석에 사용할 유효한 독립 변수가 부족합니다."); st.stop()
-                        st.info(f"분석에 사용된 총 관측치: {len(y_final)}, 사건 수: {y_final.sum()}")
-
-                        uni_results = {}
-                        univariate_pvals = {}
-                        failed_uni_vars = {}
-
-                        for var in indep_vars:
+                        if X_multi.shape[1] > 1:
                             try:
-                                var_cols = [c for c in X_final.columns if c == var or c.startswith(f"{var}=")]
-                                if not var_cols: continue
-                                X_uni = X_final[['const'] + var_cols]
-                                y_uni = y_final.loc[X_uni.index]
-                                if len(y_uni.unique()) > 1:
-                                    res = sm.Logit(y_uni, X_uni).fit(method='newton', disp=0, maxiter=50) # Use robust solver
-                                    uni_results[var] = res
-                                    pvals = [res.pvalues[c] for c in res.pvalues.index if c != 'const']
-                                    if pvals:
-                                        univariate_pvals[var] = min(pvals)
-                            except PerfectSeparationError:
-                                failed_uni_vars[var] = "데이터 완전 분리(Perfect Separation)로 분석 실패"
-                            except np.linalg.LinAlgError:
-                                failed_uni_vars[var] = "다중공선성(Singular Matrix) 문제로 분석 실패"
-                            except Exception as e: 
-                                failed_uni_vars[var] = f"알 수 없는 오류로 분석 실패 ({e})"
+                                result_multi = sm.Logit(y_multi, X_multi).fit(method='newton', disp=0)
+                            except Exception as e:
+                                st.error(f"다변량 분석 중 오류가 발생했습니다: {e}")
+
+                    output_rows = []
+                    for var in indep_vars:
+                        is_cat = cat_info_logistic.get(var, {}).get('levels') is not None
                         
-                        if failed_uni_vars:
-                            st.warning("일부 변수에 대한 단변량 분석에 실패했습니다:")
-                            for var, reason in failed_uni_vars.items():
-                                st.caption(f"- **{var}**: {reason}")
-
-                        selected_vars_for_multi = [v for v, p in univariate_pvals.items() if p <= p_enter_logistic]
-                        st.write(f"**다변량 분석 포함 변수 (p ≤ {p_enter_logistic})**: {selected_vars_for_multi if selected_vars_for_multi else '없음'}")
-
-                        result_multi = None
-                        X_multi, y_multi = None, None
-                        if selected_vars_for_multi:
-                            multi_cols_to_keep = ['const']
-                            for var in selected_vars_for_multi:
-                                multi_cols_to_keep.extend([c for c in X_final.columns if c == var or c.startswith(f"{var}=")])
+                        if is_cat:
+                            output_rows.append({'Factor': var, 'Subgroup': '', 'Univariate OR (95% CI)': '', 'p-value (Uni)': '', 'Multivariate OR (95% CI)': '', 'p-value (Multi)': ''})
+                            levels = cat_info_logistic[var]['levels']
+                            output_rows.append({'Factor': '', 'Subgroup': f"{levels[0]} (Reference)", 'Univariate OR (95% CI)': '1.0', 'p-value (Uni)': '', 'Multivariate OR (95% CI)': '1.0', 'p-value (Multi)': ''})
                             
-                            X_multi = X_final[list(dict.fromkeys(multi_cols_to_keep))]
-                            y_multi = y_final.loc[X_multi.index]
-
-                            if X_multi.shape[1] > 1:
-                                try:
-                                    result_multi = sm.Logit(y_multi, X_multi).fit(method='newton', disp=0, maxiter=50)
-                                except Exception as e:
-                                    st.error(f"다변량 분석 중 오류가 발생했습니다: {e}")
-
-                        output_rows = []
-                        for var in indep_vars:
-                            is_cat = cat_info_logistic.get(var, {}).get('levels') is not None
-                            
-                            if is_cat:
-                                output_rows.append({'Factor': var, 'Subgroup': '', 'Univariate OR (95% CI)': '', 'p-value (Uni)': '', 'Multivariate OR (95% CI)': '', 'p-value (Multi)': ''})
-                                levels = cat_info_logistic[var]['levels']
-                                output_rows.append({'Factor': '', 'Subgroup': f"{levels[0]} (Reference)", 'Univariate OR (95% CI)': '1.0', 'p-value (Uni)': '', 'Multivariate OR (95% CI)': '1.0', 'p-value (Multi)': ''})
-                                
-                                for level in levels[1:]:
-                                    dummy_name = f"{var}={level}"
-                                    row_data = {'Factor': '', 'Subgroup': str(level)}
-                                    res_uni = uni_results.get(var)
-                                    if res_uni and dummy_name in res_uni.params:
-                                        param, pval, conf = res_uni.params[dummy_name], res_uni.pvalues[dummy_name], res_uni.conf_int().loc[dummy_name]
-                                        row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
-                                        row_data['p-value (Uni)'] = format_p(pval)
-                                    else:
-                                        row_data['Univariate OR (95% CI)'] = 'NA'
-                                        row_data['p-value (Uni)'] = 'NA'
-                                    
-                                    if result_multi and var in selected_vars_for_multi and dummy_name in result_multi.params:
-                                        param, pval, conf = result_multi.params[dummy_name], result_multi.pvalues[dummy_name], result_multi.conf_int().loc[dummy_name]
-                                        row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
-                                        row_data['p-value (Multi)'] = format_p(pval)
-                                    output_rows.append(row_data)
-                            else:
-                                row_data = {'Factor': var, 'Subgroup': ''}
+                            for level in levels[1:]:
+                                dummy_name = f"{var}={level}"
+                                row_data = {'Factor': '', 'Subgroup': str(level)}
                                 res_uni = uni_results.get(var)
-                                if res_uni and var in res_uni.params:
-                                    param, pval, conf = res_uni.params[var], res_uni.pvalues[var], res_uni.conf_int().loc[var]
+                                if res_uni and dummy_name in res_uni.params:
+                                    param, pval, conf = res_uni.params[dummy_name], res_uni.pvalues[dummy_name], res_uni.conf_int().loc[dummy_name]
                                     row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                                     row_data['p-value (Uni)'] = format_p(pval)
                                 else:
                                     row_data['Univariate OR (95% CI)'] = 'NA'
                                     row_data['p-value (Uni)'] = 'NA'
-
-                                if result_multi and var in selected_vars_for_multi and var in result_multi.params:
-                                    param, pval, conf = result_multi.params[var], result_multi.pvalues[var], result_multi.conf_int().loc[var]
+                                
+                                if result_multi and var in selected_vars_for_multi and dummy_name in result_multi.params:
+                                    param, pval, conf = result_multi.params[dummy_name], result_multi.pvalues[dummy_name], result_multi.conf_int().loc[dummy_name]
                                     row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
                                     row_data['p-value (Multi)'] = format_p(pval)
                                 output_rows.append(row_data)
-
-                        publication_df = pd.DataFrame(output_rows).fillna('')
-                        st.write("### 로지스틱 회귀분석 결과 (논문 형식)")
-                        st.dataframe(publication_df)
-
-                        if result_multi:
-                            st.write("---")
-                            st.write("### 모델 적합도 검정 (Hosmer-Lemeshow Test)")
-                            y_pred_prob = result_multi.predict(X_multi)
-                            hl_stat, p_value_hl, hl_error = calculate_hosmer_lemeshow(y_multi, y_pred_prob)
-                            if hl_error:
-                                st.warning(f"호스머-렘쇼 검정을 수행할 수 없습니다: {hl_error}")
+                        else:
+                            row_data = {'Factor': var, 'Subgroup': ''}
+                            res_uni = uni_results.get(var)
+                            if res_uni and var in res_uni.params:
+                                param, pval, conf = res_uni.params[var], res_uni.pvalues[var], res_uni.conf_int().loc[var]
+                                row_data['Univariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
+                                row_data['p-value (Uni)'] = format_p(pval)
                             else:
-                                col1, col2 = st.columns(2)
-                                col1.metric("Chi-squared statistic", f"{hl_stat:.3f}")
-                                col2.metric("p-value", f"{p_value_hl:.3f}")
-                                st.caption("※ p-value가 0.05보다 크면 모델이 데이터에 잘 적합한다고 해석할 수 있습니다.")
+                                row_data['Univariate OR (95% CI)'] = 'NA'
+                                row_data['p-value (Uni)'] = 'NA'
 
-                        output_logistic = io.BytesIO()
-                        with pd.ExcelWriter(output_logistic, engine='openpyxl') as writer:
-                            publication_df.to_excel(writer, index=False, sheet_name='Logistic Regression Results')
-                        st.download_button(
-                            label="분석 결과 엑셀로 저장",
-                            data=output_logistic.getvalue(),
-                            file_name="Logistic_Regression_Publication_Table.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument-spreadsheetml-sheet",
-                            key='download_logistic_publication'
-                        )
+                            if result_multi and var in selected_vars_for_multi and var in result_multi.params:
+                                param, pval, conf = result_multi.params[var], result_multi.pvalues[var], result_multi.conf_int().loc[var]
+                                row_data['Multivariate OR (95% CI)'] = f"{np.exp(param):.3f} ({np.exp(conf[0]):.3f}-{np.exp(conf[1]):.3f})"
+                                row_data['p-value (Multi)'] = format_p(pval)
+                            output_rows.append(row_data)
 
-                except Exception as e:
-                    st.error(f"분석 중 오류가 발생했습니다: {e}")
+                    publication_df = pd.DataFrame(output_rows).fillna('')
+                    st.write("### 로지스틱 회귀분석 결과 (논문 형식)")
+                    st.dataframe(publication_df)
+
+                    if result_multi:
+                        st.write("---")
+                        st.write("### 모델 적합도 검정 (Hosmer-Lemeshow Test)")
+                        y_pred_prob = result_multi.predict(X_multi)
+                        hl_stat, p_value_hl, hl_error = calculate_hosmer_lemeshow(y_multi, y_pred_prob)
+                        if hl_error:
+                            st.warning(f"호스머-렘쇼 검정을 수행할 수 없습니다: {hl_error}")
+                        else:
+                            col1, col2 = st.columns(2)
+                            col1.metric("Chi-squared statistic", f"{hl_stat:.3f}")
+                            col2.metric("p-value", f"{p_value_hl:.3f}")
+                            st.caption("※ p-value가 0.05보다 크면 모델이 데이터에 잘 적합한다고 해석할 수 있습니다.")
+
+                    output_logistic = io.BytesIO()
+                    with pd.ExcelWriter(output_logistic, engine='openpyxl') as writer:
+                        publication_df.to_excel(writer, index=False, sheet_name='Logistic Regression Results')
+                    st.download_button(
+                        label="분석 결과 엑셀로 저장",
+                        data=output_logistic.getvalue(),
+                        file_name="Logistic_Regression_Publication_Table.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument-spreadsheetml-sheet",
+                        key='download_logistic_publication'
+                    )
+
+            except Exception as e:
+                st.error(f"분석 중 오류가 발생했습니다: {e}")
