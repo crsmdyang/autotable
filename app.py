@@ -376,8 +376,8 @@ if df is not None:
     with tab2:
         st.header("논문 Table: Factor / Subgroup / HR(95%CI) / p-value (Univariate & Multivariate)")
 
-        time_col  = st.selectbox("생존기간 변수(time)", df.columns, key="cox_time_col")
-        event_col = st.selectbox("Event 변수(예: 0=생존, 1=사망 등)", df.columns, key="cox_event_col")
+        time_col  = st.selectbox("생존기간 변수명(time)", df.columns, key="cox_time_col")
+        event_col = st.selectbox("Event 변수명", df.columns, key="cox_event_col")
 
         temp_df = df.copy()
         if event_col:
@@ -897,3 +897,4 @@ if df is not None:
                 st.error(f"분석 중 오류가 발생했습니다: {type(e).__name__}: {e}")
 
 # ================== 끝 ==============================
+
